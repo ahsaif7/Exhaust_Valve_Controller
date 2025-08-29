@@ -1,0 +1,121 @@
+#Fully Calibrated and Final Version
+
+from machine import Pin, ADC, PWM
+from time import sleep
+
+# ----------------------
+# Pins
+# ----------------------
+motor_in1 = Pin(26, Pin.OUT)
+motor_in2 = Pin(27, Pin.OUT)
+motor_enable = PWM(Pin(25))
+motor_enable.freq(1000)
+
+current_pin = ADC(Pin(34))
+current_pin.atten(ADC.ATTN_11DB)
+
+btn = Pin(23, Pin.IN, Pin.PULL_UP)  # single button, active LOW
+
+led = Pin(17, Pin.OUT)  # LED to indicate motor running
+
+# ----------------------
+# ACS712 parameters
+# ----------------------
+sensitivity = 0.1   # V/A for 20A sensor
+samples_calibration = 50
+samples_smooth = 10
+forward_limit = 0.215   # open flap
+backward_limit = 0.8    # close flap
+
+# ----------------------
+# Functions
+# ----------------------
+def calibrate_offset():
+    total = 0
+    for _ in range(samples_calibration):
+        total += current_pin.read()
+    avg = total / samples_calibration
+    return (avg / 4095) * 3.3
+
+def read_current():
+    raw = current_pin.read()
+    voltage = (raw / 4095) * 3.3
+    current = (voltage - ACSoffset) / sensitivity
+    return -current  # flip sign to match wiring
+
+def read_current_smooth():
+    total = 0
+    for _ in range(samples_smooth):
+        total += read_current()
+    return total / samples_smooth
+
+def move_motor(direction):
+    led.value(1)  # turn ON LED when motor runs
+    if direction == 'open':
+        motor_in1.value(1)
+        motor_in2.value(0)
+    else:
+        motor_in1.value(0)
+        motor_in2.value(1)
+    motor_enable.duty_u16(65535)
+
+def stop_motor():
+    motor_enable.duty_u16(0)
+    motor_in1.value(0)
+    motor_in2.value(0)
+    led.value(0)  # turn OFF LED when motor stops
+
+# ----------------------
+# Calibration at startup
+# ----------------------
+print("Calibrating ACS712 offset... keep motor OFF")
+sleep(2)
+ACSoffset = calibrate_offset()
+print("Calibrated ACS offset:", round(ACSoffset, 3), "V")
+
+# ----------------------
+# Initial state
+# ----------------------
+direction = 'open'  # first press opens flap
+last_button_state = 1
+
+print("Press button to start motor...")
+
+# ----------------------
+# Main loop
+# ----------------------
+while True:
+    button_state = btn.value()
+    
+    if last_button_state == 1 and button_state == 0:
+        print(f"Button pressed! Moving {direction} flap...")
+        move_motor(direction)
+       
+        while True:
+            current = read_current_smooth()
+            print("Motor current: {:.3f} A".format(current))
+            
+            if direction == 'open' and current > forward_limit:
+                print("Open limit reached! Motor stopped.")
+                stop_motor()
+                
+                # --- Calibrate before allowing close ---
+                print("Calibrating ACS712 offset at open position...")
+                sleep(1)
+                ACSoffset = calibrate_offset()
+                print("Calibration complete:", round(ACSoffset, 3), "V")
+                
+                direction = 'close'  # next press will close flap
+                break
+            
+            elif direction == 'close' and current > backward_limit:
+                print("Close limit reached! Motor stopped.")
+                stop_motor()
+                direction = 'open'  # next press will open flap
+                break
+            
+            sleep(0.2)
+    
+    last_button_state = button_state
+    sleep(0.05)
+
